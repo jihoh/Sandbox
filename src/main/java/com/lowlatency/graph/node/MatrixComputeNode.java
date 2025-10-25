@@ -25,14 +25,32 @@ package com.lowlatency.graph.node;
  */
 public final class MatrixComputeNode extends AbstractNode<double[][]> {
 
-    private final MatrixComputeFunction function;
+    private final Object function; // Either MatrixComputeFunction or FlatMatrixComputeFunction
+    private final boolean useFlat;
     private final int rows;
     private final int cols;
     private double[] value; // Row-major storage for cache efficiency
 
+    /**
+     * Constructor using 2D array function (convenient but slower due to conversions).
+     */
     public MatrixComputeNode(String name, int rows, int cols, MatrixComputeFunction function) {
         super(name);
         this.function = function;
+        this.useFlat = false;
+        this.rows = rows;
+        this.cols = cols;
+        this.value = new double[rows * cols];
+    }
+
+    /**
+     * Constructor using flat array function (recommended for performance).
+     * The function receives a destination array and should write results into it.
+     */
+    public MatrixComputeNode(String name, int rows, int cols, FlatMatrixComputeFunction function) {
+        super(name);
+        this.function = function;
+        this.useFlat = true;
         this.rows = rows;
         this.cols = cols;
         this.value = new double[rows * cols];
@@ -40,19 +58,23 @@ public final class MatrixComputeNode extends AbstractNode<double[][]> {
 
     @Override
     public void compute() {
-        double[][] result = function.compute();
-        if (result.length != rows) {
-            throw new IllegalStateException(
-                "Matrix dimension mismatch in computation: expected " + rows + " rows, got " + result.length
-            );
-        }
-        for (int i = 0; i < rows; i++) {
-            if (result[i].length != cols) {
+        if (useFlat) {
+            ((FlatMatrixComputeFunction) function).compute(value);
+        } else {
+            double[][] result = ((MatrixComputeFunction) function).compute();
+            if (result.length != rows) {
                 throw new IllegalStateException(
-                    "Matrix dimension mismatch in computation: expected " + cols + " cols, got " + result[i].length
+                    "Matrix dimension mismatch in computation: expected " + rows + " rows, got " + result.length
                 );
             }
-            System.arraycopy(result[i], 0, value, i * cols, cols);
+            for (int i = 0; i < rows; i++) {
+                if (result[i].length != cols) {
+                    throw new IllegalStateException(
+                        "Matrix dimension mismatch in computation: expected " + cols + " cols, got " + result[i].length
+                    );
+                }
+                System.arraycopy(result[i], 0, value, i * cols, cols);
+            }
         }
         this.dirty = false;
     }
@@ -113,11 +135,35 @@ public final class MatrixComputeNode extends AbstractNode<double[][]> {
     }
 
     /**
-     * Functional interface for matrix computation.
+     * Functional interface for matrix computation using 2D arrays.
      * Returns a new 2D double array with the computation result.
+     *
+     * Note: This is convenient but slower due to array conversions.
+     * Use FlatMatrixComputeFunction for better performance.
      */
     @FunctionalInterface
     public interface MatrixComputeFunction {
         double[][] compute();
+    }
+
+    /**
+     * Functional interface for matrix computation using flat arrays.
+     * Writes result directly into the provided destination array (row-major order).
+     *
+     * Recommended for performance-critical code:
+     * - Zero allocation (no 2D array creation)
+     * - Cache-friendly sequential access
+     * - No pointer indirection
+     *
+     * @see MatrixComputeNode#MatrixComputeNode(String, int, int, FlatMatrixComputeFunction)
+     */
+    @FunctionalInterface
+    public interface FlatMatrixComputeFunction {
+        /**
+         * Computes the matrix result and writes it into dest.
+         *
+         * @param dest destination array in row-major order (length = rows * cols)
+         */
+        void compute(double[] dest);
     }
 }
