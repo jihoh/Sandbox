@@ -1,6 +1,7 @@
 package com.lowlatency.graph.hybrid.compiler;
 
 import com.lowlatency.graph.hybrid.core.Calculator;
+import com.lowlatency.graph.hybrid.core.CalculatorFactory;
 import com.lowlatency.graph.hybrid.core.HybridCompiledGraph;
 
 import java.util.HashMap;
@@ -20,6 +21,7 @@ import java.util.Set;
  * - Pre-registered common operations
  * - Better error messages
  * - Operation metadata and documentation
+ * - Support for stateful calculators via CalculatorFactory
  */
 public final class CalculatorRegistry {
 
@@ -28,9 +30,10 @@ public final class CalculatorRegistry {
 
     /** Metadata for each registered operation */
     private record OperationMetadata(
-        Calculator calculator,
+        CalculatorFactory factory,
         int arity,
-        String description
+        String description,
+        boolean stateful
     ) {}
 
     private final Map<String, OperationMetadata> operations;
@@ -41,43 +44,86 @@ public final class CalculatorRegistry {
 
     // ========== Registration API ==========
 
+    // ========== Stateless Calculator Registration ==========
+
     /**
-     * Registers a calculator that accepts a variable number of inputs.
+     * Registers a stateless calculator that accepts a variable number of inputs.
      *
      * @param operationName unique operation identifier (e.g., "SUM", "MAX")
-     * @param calculator the computation lambda/function
+     * @param calculator the computation lambda/function (stateless, shared across nodes)
      * @param description human-readable description
      */
     public CalculatorRegistry registerVariadic(String operationName,
                                                 Calculator calculator,
                                                 String description) {
-        if (operations.containsKey(operationName)) {
-            throw new IllegalArgumentException("Operation already registered: " + operationName);
-        }
-        operations.put(operationName,
-            new OperationMetadata(calculator, VARIADIC, description));
-        return this;
+        return registerVariadic(operationName, CalculatorFactory.stateless(calculator), description, false);
     }
 
     /**
-     * Registers a calculator that accepts a variable number of inputs.
+     * Registers a stateless calculator that accepts a variable number of inputs.
      */
     public CalculatorRegistry registerVariadic(String operationName, Calculator calculator) {
         return registerVariadic(operationName, calculator, "");
     }
 
     /**
-     * Registers a calculator that accepts a fixed number of inputs.
+     * Registers a stateless calculator that accepts a fixed number of inputs.
      *
      * @param operationName unique operation identifier (e.g., "SUB", "DIV")
      * @param arity exact number of parent nodes required
-     * @param calculator the computation lambda/function
+     * @param calculator the computation lambda/function (stateless, shared across nodes)
      * @param description human-readable description
      */
     public CalculatorRegistry registerFixed(String operationName,
                                             int arity,
                                             Calculator calculator,
                                             String description) {
+        return registerFixed(operationName, arity, CalculatorFactory.stateless(calculator), description, false);
+    }
+
+    /**
+     * Registers a stateless calculator that accepts a fixed number of inputs.
+     */
+    public CalculatorRegistry registerFixed(String operationName, int arity, Calculator calculator) {
+        return registerFixed(operationName, arity, calculator, "");
+    }
+
+    // ========== Stateful Calculator Registration (Factory-based) ==========
+
+    /**
+     * Registers a stateful calculator factory with variable arity.
+     * Each node using this operation will get its own calculator instance.
+     *
+     * @param operationName unique operation identifier
+     * @param factory factory that creates new calculator instances
+     * @param description human-readable description
+     */
+    public CalculatorRegistry registerVariadic(String operationName,
+                                                CalculatorFactory factory,
+                                                String description,
+                                                boolean stateful) {
+        if (operations.containsKey(operationName)) {
+            throw new IllegalArgumentException("Operation already registered: " + operationName);
+        }
+        operations.put(operationName,
+            new OperationMetadata(factory, VARIADIC, description, stateful));
+        return this;
+    }
+
+    /**
+     * Registers a stateful calculator factory with fixed arity.
+     * Each node using this operation will get its own calculator instance.
+     *
+     * @param operationName unique operation identifier
+     * @param arity exact number of parent nodes required
+     * @param factory factory that creates new calculator instances
+     * @param description human-readable description
+     */
+    public CalculatorRegistry registerFixed(String operationName,
+                                            int arity,
+                                            CalculatorFactory factory,
+                                            String description,
+                                            boolean stateful) {
         if (arity < 0) {
             throw new IllegalArgumentException(
                 "Fixed arity must be non-negative. Use registerVariadic for variable arity.");
@@ -86,21 +132,16 @@ public final class CalculatorRegistry {
             throw new IllegalArgumentException("Operation already registered: " + operationName);
         }
         operations.put(operationName,
-            new OperationMetadata(calculator, arity, description));
+            new OperationMetadata(factory, arity, description, stateful));
         return this;
-    }
-
-    /**
-     * Registers a calculator that accepts a fixed number of inputs.
-     */
-    public CalculatorRegistry registerFixed(String operationName, int arity, Calculator calculator) {
-        return registerFixed(operationName, arity, calculator, "");
     }
 
     // ========== Query API ==========
 
     /**
-     * Retrieves the calculator for an operation.
+     * Retrieves a calculator instance for an operation.
+     * For stateless operations, returns a shared instance.
+     * For stateful operations, creates a new instance.
      *
      * @throws IllegalArgumentException if operation not registered
      */
@@ -111,7 +152,34 @@ public final class CalculatorRegistry {
                 "No calculator registered for operation: " + operationName +
                 ". Available operations: " + operations.keySet());
         }
-        return meta.calculator();
+        return meta.factory().create();
+    }
+
+    /**
+     * Retrieves the calculator factory for an operation.
+     *
+     * @throws IllegalArgumentException if operation not registered
+     */
+    public CalculatorFactory getCalculatorFactory(String operationName) {
+        OperationMetadata meta = operations.get(operationName);
+        if (meta == null) {
+            throw new IllegalArgumentException(
+                "No calculator factory for operation: " + operationName);
+        }
+        return meta.factory();
+    }
+
+    /**
+     * Checks if an operation is stateful.
+     *
+     * @throws IllegalArgumentException if operation not registered
+     */
+    public boolean isStateful(String operationName) {
+        OperationMetadata meta = operations.get(operationName);
+        if (meta == null) {
+            throw new IllegalArgumentException("Unknown operation: " + operationName);
+        }
+        return meta.stateful();
     }
 
     /**
